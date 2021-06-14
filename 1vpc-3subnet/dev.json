@@ -1,0 +1,6 @@
+[
+    "VpcCidrParam=10.2.0.0/22",
+    "PublicAZASubnetBlock=10.2.0.0/24",
+    "PrivateAZASubnetBlock=10.2.1.0/24",
+    "PrivateAZBSubnetBlock=10.2.2.0/23"
+]
