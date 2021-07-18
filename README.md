@@ -14,4 +14,5 @@
 
 ## reference
 https://github.com/1Strategy/vpc-starter-template
+
 https://aws-quickstart.github.io/quickstart-linux-bastion/#_linux_bastion_hosts_on_aws
