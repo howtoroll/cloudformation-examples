@@ -52,12 +52,33 @@ Parameters:
     Description: The Linux distribution for the AMI to be used for the bastion instances.
     Default: ami-0b276ad63ba2d6009
 
-Outputs:
-  VpcId:
-    Description: VPC Id
-    Value: !Ref Vpc
-    Export:
-      Name: !Sub "${AWS::StackName}-vpc-id"
+  AlternativeIAMRole:
+    Type: String
+    Description: An existing IAM role name to attach to the bastion. If left blank,
+      a new role will be created.
+    Default: ''
+
+  QSS3BucketName:
+    Type: String
+    Default: cf-bastion-bucket
+
+  QSS3BucketRegion:
+    Type: String
+    Default: ap-northeast-2
+
+  QSS3KeyPrefix:
+    Type: String
+    Default: cf-bastion/
+    AllowedPattern: ^([0-9a-zA-Z-.]+/)*$
+
+Conditions:
+  CreateIAMRole: !Equals
+    - !Ref AlternativeIAMRole
+    - ''
+
+  UsingDefaultBucket: !Equals
+    - !Ref QSS3BucketName
+    - cf-bastion-bucket
 
 Resources:
   Vpc:
@@ -225,6 +246,7 @@ Resources:
     Properties:
       RouteTableIds:
         - !Ref PrivateAZARouteTable
+        - !Ref PrivateAZBRouteTable
       ServiceName: !Join
         - ""
         - - com.amazonaws.
@@ -239,6 +261,7 @@ Resources:
     Properties:
       RouteTableIds:
         - !Ref PrivateAZARouteTable
+        - !Ref PrivateAZBRouteTable
       ServiceName: !Join
         - ""
         - - com.amazonaws.
@@ -248,6 +271,88 @@ Resources:
       VpcEndpointType: Gateway
 
   # Bastion Host
+  BastionMainLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+
+  SSHMetricFilter:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref BastionMainLogGroup
+      FilterPattern: ON FROM USER PWD
+      MetricTransformations:
+        - MetricName: SSHCommandCount
+          MetricValue: '1'
+          MetricNamespace: !Sub "bastion/${AWS::StackName}"
+
+  BastionHostRole:
+    Condition: CreateIAMRole
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Principal:
+              Service:
+                - !Sub 'ec2.${AWS::URLSuffix}'
+            Effect: Allow
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy'
+
+  # inline policy
+  BastionHostPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: BastionPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Resource: !Sub
+              - arn:${AWS::Partition}:s3:::${S3Bucket}/${QSS3KeyPrefix}*
+              - S3Bucket: !If [UsingDefaultBucket, !Sub '${QSS3BucketName}-${AWS::Region}', !Ref QSS3BucketName]
+            Effect: Allow
+          - Action:
+              - 'logs:CreateLogStream'
+              - 'logs:GetLogEvents'
+              - 'logs:PutLogEvents'
+              - 'logs:DescribeLogGroups'
+              - 'logs:DescribeLogStreams'
+              - 'logs:PutRetentionPolicy'
+              - 'logs:PutMetricFilter'
+              - 'logs:CreateLogGroup'
+            Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BastionMainLogGroup}:*"
+            Effect: Allow
+          - Action:
+              - 'ec2:DescribeAddresses'
+            Resource: '*'
+            Effect: Allow
+          - Effect: Allow
+            Action:
+              - 'ec2:AssociateAddress'
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:eip/${BastionEIP.AllocationId}"
+      Roles:
+        - !If
+          - CreateIAMRole
+          - !Ref BastionHostRole
+          - !Ref AlternativeIAMRole
+
+  BastionHostProfile:
+    DependsOn: BastionHostPolicy
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !If
+          - CreateIAMRole
+          - !Ref BastionHostRole
+          - !Ref AlternativeIAMRole
+      Path: /
+
   BastionSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
@@ -275,9 +380,20 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub bastion-${AWS::StackName}
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          echo "Hello Basion!"
 
   BastionEIP:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
       InstanceId: !Ref BastionInstance
+
+Outputs:
+  VpcId:
+    Description: VPC Id
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${AWS::StackName}-vpc-id"
